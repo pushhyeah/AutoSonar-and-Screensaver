@@ -1,0 +1,10 @@
+psutil>=6.0
+pystray>=0.19
+pillow>=10.0
+hidapi>=0.14
+imageio>=2.34
+imageio-ffmpeg>=0.5
+winrt-runtime>=3.0
+winrt-Windows.Foundation>=3.0
+winrt-Windows.Foundation.Collections>=3.0
+winrt-Windows.Media.Control>=3.0
