@@ -17,7 +17,7 @@ import numpy as np
 import pystray
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
-from autosonar.config import ConfigStore, Rule, display_exe, exe_key, set_run_at_startup
+from autosonar.config import ConfigStore, Rule, display_exe, display_name, exe_key, set_run_at_startup
 from autosonar.games import (
     GameSuggestion,
     build_suggestions,
@@ -150,6 +150,26 @@ def apply_theme(root: tk.Misc) -> None:
     )
     style.map("Ghost.TButton", background=[("active", _CARD), ("pressed", _CARD)])
     style.configure(
+        "Icon.TButton",
+        font=("Segoe MDL2 Assets", 14),
+        padding=(8, 4),
+        background=_CARD,
+        foreground=_INK,
+        borderwidth=0,
+        focuscolor=_CARD,
+    )
+    style.map("Icon.TButton", background=[("active", _HEADING), ("pressed", _HEADING)])
+    style.configure(
+        "Danger.TButton",
+        font=("Segoe MDL2 Assets", 14),
+        padding=(8, 4),
+        background=_CARD,
+        foreground=_ERROR,
+        borderwidth=0,
+        focuscolor=_CARD,
+    )
+    style.map("Danger.TButton", background=[("active", _HEADING), ("pressed", _HEADING)])
+    style.configure(
         "Treeview",
         font=("Segoe UI", 10),
         rowheight=32,
@@ -209,15 +229,15 @@ def apply_theme(root: tk.Misc) -> None:
     root.option_add("*TCombobox*Listbox.selectForeground", _INK)
 
 
-def _render_glow(state: str, text: str, width: int, height: int) -> Image.Image:
+def _render_glow(state: str, text: str, width: int, height: int, subtitle: str = "") -> Image.Image:
     scale = 3
     width = max(int(width), 1)
     height = max(int(height), 1)
-    sharp = _render_glow_sharp(state, text, width * scale, height * scale, scale)
+    sharp = _render_glow_sharp(state, text, width * scale, height * scale, scale, subtitle)
     return sharp.resize((width, height), Image.Resampling.LANCZOS)
 
 
-def _render_glow_sharp(state: str, text: str, width: int, height: int, scale: int) -> Image.Image:
+def _render_glow_sharp(state: str, text: str, width: int, height: int, scale: int, subtitle: str = "") -> Image.Image:
     if state == "game":
         color = np.array([45, 212, 191], dtype=np.float32)
         strength = 210.0
@@ -252,18 +272,33 @@ def _render_glow_sharp(state: str, text: str, width: int, height: int, scale: in
     font_size = (28 if len(text) <= 18 else 20 if len(text) <= 28 else 15) * scale
     font_path = Path(r"C:\Windows\Fonts\segoeuib.ttf")
     font = ImageFont.truetype(str(font_path), font_size) if font_path.is_file() else ImageFont.load_default()
-    lines = _wrap_label(text, font, radius * 1.55)
+    lines = _wrap_label(text, font, radius * 1.55)[:2]
     heights = []
     for line in lines:
         box = draw.textbbox((0, 0), line, font=font)
         heights.append(box[3] - box[1])
+    sub_font = None
+    sub_height = 0
+    if subtitle:
+        sub_size = max(12, int(font_size * 0.55))
+        sub_path = Path(r"C:\Windows\Fonts\segoeui.ttf")
+        sub_font = ImageFont.truetype(str(sub_path), sub_size) if sub_path.is_file() else font
+        sub_box = draw.textbbox((0, 0), subtitle, font=sub_font)
+        sub_height = sub_box[3] - sub_box[1]
     total = sum(heights) + max(0, len(lines) - 1) * 6 * scale
+    if sub_font is not None:
+        total += sub_height + 8 * scale
     y = center_y - total / 2
     for line, line_height in zip(lines, heights):
         box = draw.textbbox((0, 0), line, font=font)
         x = center_x - (box[2] - box[0]) / 2
         draw.text((x, y), line, fill=(242, 245, 247, 255), font=font)
         y += line_height + 6 * scale
+    if sub_font is not None:
+        y += 2 * scale
+        box = draw.textbbox((0, 0), subtitle, font=sub_font)
+        x = center_x - (box[2] - box[0]) / 2
+        draw.text((x, y), subtitle, fill=(154, 166, 178, 255), font=sub_font)
     return image
 
 
@@ -280,6 +315,24 @@ def _wrap_label(text: str, font: ImageFont.ImageFont, width: float) -> list[str]
             current = word
     lines.append(current)
     return lines[:3]
+
+
+class _ShufflePreview:
+    def __init__(self) -> None:
+        from autosonar.screensaver import BUILTINS, make_effect
+
+        self._names = [item for item in BUILTINS if item not in {"shuffle", "bouncing-text"}]
+        self._effect = make_effect(self._names[0])
+        self._ticks = 0
+
+    def frame(self):
+        from autosonar.screensaver import make_effect
+        import random
+
+        self._ticks += 1
+        if self._ticks % 45 == 0:
+            self._effect = make_effect(random.choice(self._names))
+        return self._effect.frame()
 
 
 class SettingsWindow:
@@ -309,6 +362,7 @@ class SettingsWindow:
         self.default_query = tk.StringVar()
         self.custom_folder = tk.StringVar(value="No folder selected")
         self.custom_title = tk.StringVar()
+        self.custom_name = tk.StringVar()
         self.custom_preset_query = tk.StringVar()
         self._custom_exes: list[str] = []
         self.startup_var = tk.BooleanVar(value=self.settings.start_with_windows)
@@ -438,12 +492,13 @@ class SettingsWindow:
         self._wrapping.append(label)
         return label
 
-    def _listbox(self, parent: tk.Misc, *, height: int) -> tk.Listbox:
+    def _listbox(self, parent: tk.Misc, *, height: int, selectmode: str = "browse") -> tk.Listbox:
         return tk.Listbox(
             parent,
             height=height,
             activestyle="none",
             exportselection=False,
+            selectmode=selectmode,
             font=("Segoe UI", 10),
             bg=_CARD,
             fg=_INK,
@@ -463,27 +518,26 @@ class SettingsWindow:
         map_frame = ttk.Frame(card, style="Card.TFrame")
         map_frame.grid(row=2, column=0, sticky="ew")
         map_frame.columnconfigure(0, weight=1)
-        self.rules_tree = ttk.Treeview(
-            map_frame,
-            columns=("game", "preset"),
-            show="headings",
-            height=6,
-            selectmode="browse",
+        self._games_canvas = tk.Canvas(map_frame, height=220, bg=_CARD, highlightthickness=0, bd=0)
+        games_scroll = ttk.Scrollbar(map_frame, orient="vertical", command=self._games_canvas.yview)
+        self._games_canvas.configure(yscrollcommand=games_scroll.set)
+        self._games_canvas.grid(row=0, column=0, sticky="ew")
+        games_scroll.grid(row=0, column=1, sticky="ns")
+        self._games_inner = ttk.Frame(self._games_canvas, style="Card.TFrame")
+        self._games_window = self._games_canvas.create_window((0, 0), window=self._games_inner, anchor="nw")
+        self._games_inner.columnconfigure(0, weight=1)
+        self._games_inner.bind(
+            "<Configure>",
+            lambda _event: self._games_canvas.configure(scrollregion=self._games_canvas.bbox("all")),
         )
-        for key, title, width in (("game", "Game", 220), ("preset", "Preset", 220)):
-            self.rules_tree.heading(key, text=title, anchor="w")
-            self.rules_tree.column(key, width=width, anchor="w", stretch=True)
-        map_scroll = ttk.Scrollbar(map_frame, orient="vertical", command=self.rules_tree.yview)
-        self.rules_tree.configure(yscrollcommand=map_scroll.set)
-        self.rules_tree.grid(row=0, column=0, sticky="ew")
-        map_scroll.grid(row=0, column=1, sticky="ns")
-        self.rules_tree.bind("<Delete>", lambda _event: self._on_remove())
-        ttk.Button(card, text="Remove", command=self._on_remove).grid(row=3, column=0, sticky="w", pady=(8, 0))
-        self._hint(card, "Installed and running games are added on their own.", 4)
+        self._games_canvas.bind(
+            "<Configure>",
+            lambda event: self._games_canvas.itemconfigure(self._games_window, width=event.width),
+        )
+        self._hint(card, "The pencil changes the folder and preset. The trash icon removes the game.", 3)
         actions = ttk.Frame(card, style="Card.TFrame")
-        actions.grid(row=5, column=0, sticky="w")
+        actions.grid(row=4, column=0, sticky="w", pady=(8, 0))
         ttk.Button(actions, text="Add a game", style="Accent.TButton", command=self._open_add_game).pack(side="left")
-        ttk.Button(actions, text="Add an installed game", command=self._open_installed_game).pack(side="left", padx=(8, 0))
         self.reload_rules()
 
     def _build_default_card(self, body: ttk.Frame) -> None:
@@ -521,60 +575,157 @@ class SettingsWindow:
         ttk.Label(card, text="Dock screensaver", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         self._hint(
             card,
-            "Plays on the Nova Pro dock after it has been still. It stays off while media is playing. Use 0 minutes to turn it off.",
+            "Plays on the Nova Pro dock after it has been still. Click a preview to choose it. It stays off while media is playing. Use 0 minutes to turn it off.",
             1,
         )
         controls = ttk.Frame(card, style="Card.TFrame")
         controls.grid(row=2, column=0, sticky="ew")
-        controls.columnconfigure(3, weight=1)
         ttk.Label(controls, text="Minutes", style="Card.TLabel").grid(row=0, column=0, sticky="w")
         self.saver_minutes = ttk.Spinbox(controls, from_=0, to=180, width=5, command=self._save_screensaver)
         self.saver_minutes.set(str(self._saver.idle_minutes))
-        self.saver_minutes.grid(row=0, column=1, sticky="w", padx=(8, 16))
+        self.saver_minutes.grid(row=0, column=1, sticky="w", padx=(8, 0))
         self.saver_minutes.bind("<FocusOut>", lambda _event: self._save_screensaver())
         self.saver_minutes.bind("<Return>", lambda _event: self._save_screensaver())
-        ttk.Label(controls, text="Plays", style="Card.TLabel").grid(row=0, column=2, sticky="w")
-        self.saver_choice = ttk.Combobox(controls, state="readonly", width=12)
-        self.saver_choice.grid(row=0, column=3, sticky="ew", padx=(8, 0))
-        self.saver_choice.bind("<<ComboboxSelected>>", lambda _event: self._save_screensaver())
+        self._preview_gallery = ttk.Frame(card, style="Card.TFrame")
+        self._preview_gallery.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        self._preview_gallery.bind("<Configure>", self._place_preview_tiles)
+        self._preview_tiles: dict[str, tk.Frame] = {}
+        self._preview_canvases: dict[str, tk.Canvas] = {}
+        self._preview_players: dict[str, object] = {}
+        self._preview_photos: dict[str, ImageTk.PhotoImage] = {}
+        words = ttk.Frame(card, style="Card.TFrame")
+        words.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(words, text="Bouncing text", style="Card.TLabel").grid(row=0, column=0, sticky="w")
+        self.saver_text = tk.StringVar(value=self._saver.bounce_text)
+        self.saver_text.trace_add("write", self._limit_saver_text)
+        saver_text_entry = ttk.Entry(words, textvariable=self.saver_text, width=16)
+        saver_text_entry.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        saver_text_entry.bind("<FocusOut>", lambda _event: self._save_screensaver())
+        saver_text_entry.bind("<Return>", lambda _event: self._save_screensaver())
+        ttk.Label(words, text="Up to 12 characters.", style="CardMuted.TLabel").grid(row=0, column=2, sticky="w", padx=(8, 0))
         buttons = ttk.Frame(card, style="Card.TFrame")
-        buttons.grid(row=3, column=0, sticky="w", pady=(10, 0))
-        ttk.Button(buttons, text="Test", style="Accent.TButton", command=self._test_screensaver).pack(side="left")
+        buttons.grid(row=5, column=0, sticky="w", pady=(10, 0))
+        ttk.Button(buttons, text="Test on dock", style="Accent.TButton", command=self._test_screensaver).pack(side="left")
         ttk.Button(buttons, text="Add clip", command=self._add_screensaver_clip).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Remove clip", command=self._remove_screensaver_clip).pack(side="left", padx=(8, 0))
         self._saver_ids: list[str] = []
         self._refresh_saver_choices()
+        if not getattr(self, "_preview_loop", False):
+            self._preview_loop = True
+            self.win.after(90, self._tick_previews)
 
     def _refresh_saver_choices(self) -> None:
-        from autosonar.screensaver import BUILTINS, list_media
+        from autosonar.screensaver import BUILTINS, BounceText, list_media, load_clip, make_effect
 
-        labels = {
-            "starfield": "Starfield",
-            "matrix": "Matrix rain",
-            "bounce": "Bouncing mark",
-            "clock": "Clock",
-            "plasma": "Plasma",
-            "shuffle": "Shuffle",
-        }
+        for child in self._preview_gallery.winfo_children():
+            child.destroy()
+        self._preview_tiles.clear()
+        self._preview_canvases.clear()
+        self._preview_players.clear()
         self._saver_ids = list(BUILTINS) + list_media()
-        self.saver_choice["values"] = [labels.get(item, item) for item in self._saver_ids]
-        if self._saver.choice in self._saver_ids:
-            self.saver_choice.current(self._saver_ids.index(self._saver.choice))
-        elif self._saver_ids:
-            self.saver_choice.current(0)
+        if self._saver.choice not in self._saver_ids and self._saver_ids:
+            self._saver.choice = self._saver_ids[0]
+        for choice in self._saver_ids:
+            border = tk.Frame(self._preview_gallery, bg=_LINE)
+            canvas = tk.Canvas(border, width=192, height=96, bg="#080c10", highlightthickness=0, bd=0)
+            canvas.grid(padx=2, pady=2)
+            canvas.bind("<Button-1>", lambda _event, item=choice: self._choose_preview(item))
+            border.bind("<Button-1>", lambda _event, item=choice: self._choose_preview(item))
+            self._preview_tiles[choice] = border
+            self._preview_canvases[choice] = canvas
+            self._preview_players[choice] = self._make_preview_player(choice, BounceText, load_clip, make_effect)
+        self._paint_preview_borders()
+        self._place_preview_tiles()
+
+    def _make_preview_player(self, choice: str, bounce_text, load_clip, make_effect):
+        from autosonar.screensaver import BUILTINS
+
+        if choice == "shuffle":
+            return _ShufflePreview()
+        if choice == "bouncing-text":
+            return bounce_text(self.saver_text.get())
+        if choice in BUILTINS:
+            return make_effect(choice)
+        try:
+            return load_clip(choice)
+        except Exception:
+            log.exception("Could not preview %s", choice)
+            return make_effect("starfield")
+
+    def _place_preview_tiles(self, _event: object = None) -> None:
+        width = self._preview_gallery.winfo_width()
+        columns = max(1, width // 210)
+        for index, choice in enumerate(self._saver_ids):
+            tile = self._preview_tiles.get(choice)
+            if tile is not None:
+                tile.grid(row=index // columns, column=index % columns, padx=6, pady=6, sticky="w")
+
+    def _paint_preview_borders(self) -> None:
+        for choice, tile in self._preview_tiles.items():
+            try:
+                tile.configure(bg=_ACCENT if choice == self._saver.choice else _LINE)
+            except tk.TclError:
+                return
+
+    def _choose_preview(self, choice: str) -> None:
+        self._saver.choice = choice
+        self._paint_preview_borders()
+        self._save_screensaver()
+
+    def _limit_saver_text(self, *_args: object) -> None:
+        from autosonar.screensaver import BOUNCE_TEXT_LIMIT, BounceText
+
+        value = self.saver_text.get().replace("\n", "")
+        if len(value) > BOUNCE_TEXT_LIMIT:
+            self.saver_text.set(value[:BOUNCE_TEXT_LIMIT])
+            return
+        player = self._preview_players.get("bouncing-text")
+        if player is not None and not isinstance(player, BounceText):
+            return
+        if isinstance(player, BounceText) and player._text == (value or "Hi"):
+            return
+        if "bouncing-text" in self._preview_players:
+            self._preview_players["bouncing-text"] = BounceText(value)
+
+    def _tick_previews(self) -> None:
+        if not self._alive():
+            return
+        try:
+            visible = self._page == "settings" and bool(self.win.winfo_viewable())
+        except tk.TclError:
+            return
+        if visible:
+            self._draw_previews()
+        self.win.after(90 if visible else 500, self._tick_previews)
+
+    def _draw_previews(self) -> None:
+        for choice, player in list(self._preview_players.items()):
+            canvas = self._preview_canvases.get(choice)
+            if canvas is None:
+                continue
+            try:
+                frame = player.frame().resize((192, 96), Image.Resampling.NEAREST).convert("L")
+            except Exception:
+                log.debug("Could not draw a screensaver preview", exc_info=True)
+                continue
+            photo = ImageTk.PhotoImage(frame)
+            self._preview_photos[choice] = photo
+            canvas.delete("preview")
+            canvas.create_image(96, 48, image=photo, tags="preview")
 
     def _save_screensaver(self) -> None:
         from autosonar.oled import reload_screen_settings
-        from autosonar.screensaver import ScreenSettings, save_settings
+        from autosonar.screensaver import ScreenSettings, clean_bounce_text, save_settings
 
         try:
             minutes = int(float(self.saver_minutes.get()))
         except ValueError:
             minutes = self._saver.idle_minutes
         minutes = max(0, min(180, minutes))
-        index = self.saver_choice.current()
-        choice = self._saver_ids[index] if 0 <= index < len(self._saver_ids) else self._saver.choice
-        self._saver = ScreenSettings(idle_minutes=minutes, choice=choice)
+        text = clean_bounce_text(self.saver_text.get())
+        if text != self.saver_text.get():
+            self.saver_text.set(text)
+        self._saver = ScreenSettings(idle_minutes=minutes, choice=self._saver.choice, bounce_text=text)
         try:
             save_settings(self._saver)
         except OSError:
@@ -735,9 +886,9 @@ class SettingsWindow:
         height = canvas.winfo_height()
         if width < 2 or height < 2:
             return
-        key = (snap.state, snap.circle_text, width, height)
+        key = (snap.state, snap.circle_text, snap.circle_sub, width, height)
         if getattr(self, "_glow_key", None) != key:
-            image = _render_glow(snap.state, snap.circle_text, width, height)
+            image = _render_glow(snap.state, snap.circle_text, width, height, snap.circle_sub)
             self._glow_photo = ImageTk.PhotoImage(image)
             self._glow_key = key
         canvas.create_image(width / 2, height / 2, image=self._glow_photo)
@@ -774,18 +925,54 @@ class SettingsWindow:
         threading.Thread(target=work, name="autosonar-refresh", daemon=True).start()
 
     def reload_rules(self) -> None:
-        children = self.rules_tree.get_children()
-        if children:
-            self.rules_tree.delete(*children)
-        for index, rule in enumerate(self.settings.rules):
-            self.rules_tree.insert(
-                "",
-                "end",
-                iid=str(index),
-                values=(self._game_label(rule), rule.profile_name or rule.profile_id),
+        for child in self._games_inner.winfo_children():
+            child.destroy()
+        groups = self._game_groups()
+        if not groups:
+            ttk.Label(self._games_inner, text="No games yet.", style="CardMuted.TLabel").grid(
+                row=0, column=0, sticky="w", pady=8
             )
+        for index, members in enumerate(groups):
+            rule = members[0]
+            preset = rule.profile_name or rule.profile_id
+            detail = preset if len(members) == 1 else f"{len(members)} programs · {preset}"
+            row = ttk.Frame(self._games_inner, style="Card.TFrame")
+            row.grid(row=index, column=0, sticky="ew", pady=3)
+            row.columnconfigure(0, weight=1)
+            ttk.Label(row, text=display_name(rule), style="Card.TLabel").grid(row=0, column=0, sticky="w")
+            ttk.Label(row, text=detail, style="CardMuted.TLabel").grid(row=1, column=0, sticky="w")
+            ttk.Button(
+                row,
+                text="\uE70F",
+                style="Icon.TButton",
+                command=lambda item=rule: self._open_edit_game(item),
+            ).grid(row=0, column=1, rowspan=2, padx=(8, 0))
+            ttk.Button(
+                row,
+                text="\uE74D",
+                style="Danger.TButton",
+                command=lambda item=rule: self._on_delete_game(item),
+            ).grid(row=0, column=2, rowspan=2, padx=(4, 0))
         self.default_caption.set(self._default_caption())
         self._fill_suggestions()
+
+    def _game_groups(self) -> list[list[Rule]]:
+        groups: list[list[Rule]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for rule in self.settings.rules:
+            key = self._group_key(rule)
+            if key in seen:
+                continue
+            seen.add(key)
+            groups.append([item for item in self.settings.rules if self._group_key(item) == key])
+        return groups
+
+    @staticmethod
+    def _group_key(rule: Rule) -> tuple[str, str, str]:
+        title = rule.title_contains.casefold()
+        if rule.name.strip():
+            return ("name", rule.name.casefold(), title)
+        return ("exe", exe_key(rule.exe), title)
 
     def add_suggestion(self, item: GameSuggestion) -> str | None:
         self._pull_settings()
@@ -794,6 +981,7 @@ class SettingsWindow:
             profile_id=item.preset_id,
             profile_name=item.preset_name,
             title_contains=item.title_contains,
+            name=item.name,
         )
         self.settings.upsert_rule(rule)
         if not self._save():
@@ -823,24 +1011,29 @@ class SettingsWindow:
 
     def add_custom_rule(self) -> str | None:
         preset = self._selected_custom_preset()
-        exe = self._selected_custom_exe()
-        if not exe:
+        exes = self._selected_custom_exes()
+        if not exes:
             return "Browse to the game folder and choose its program."
         if preset is None:
             return "Choose a Sonar preset from the list."
         self._pull_settings()
         title = self.custom_title.get().strip()
-        rule = Rule(
-            exe=exe,
-            profile_id=preset.id,
-            profile_name=preset.name,
-            title_contains=title,
-        )
-        self.settings.upsert_rule(rule)
+        name = self.custom_name.get().strip() or Path(exes[0]).stem
+        for exe in exes:
+            self.settings.upsert_rule(
+                Rule(
+                    exe=exe,
+                    profile_id=preset.id,
+                    profile_name=preset.name,
+                    title_contains=title,
+                    name=name,
+                )
+            )
         if not self._save():
             return "Could not save mappings."
         self.custom_folder.set("No folder selected")
         self.custom_title.set("")
+        self.custom_name.set("")
         self.custom_preset_query.set("")
         self._custom_exes = []
         if self._alive_widget("custom_exe_list"):
@@ -867,47 +1060,88 @@ class SettingsWindow:
         self.custom_exe_list.delete(0, tk.END)
         for name in self._custom_exes:
             self.custom_exe_list.insert(tk.END, name)
-        several = len(self._custom_exes) > 1
-        if self._alive_widget("_exe_label"):
-            self._exe_label.grid() if several else self._exe_label.grid_remove()
-        self.custom_exe_list.grid() if several else self.custom_exe_list.grid_remove()
-        if len(self._custom_exes) == 1:
-            self.custom_exe_list.selection_set(0)
-            self._message(f"Using {self._custom_exes[0]}.")
-        elif not self._custom_exes:
-            self._message("No program was found there. Choose the folder that contains the game.", error=True)
-        else:
-            self.custom_exe_list.selection_clear(0, tk.END)
-            self._message("Several programs were found. Choose the game itself.")
+            several = len(self._custom_exes) > 1
+            if self._alive_widget("_exe_label"):
+                self._exe_label.configure(
+                    text="Select every program that belongs to this game." if several else "Choose the program"
+                )
+                self._exe_label.grid() if several else self._exe_label.grid_remove()
+            self.custom_exe_list.grid() if several else self.custom_exe_list.grid_remove()
+            if self._custom_exes:
+                self.custom_exe_list.selection_set(0, tk.END)
+                if not self.custom_name.get().strip():
+                    self.custom_name.set(folder.name)
+            if len(self._custom_exes) == 1:
+                self._message(f"Using {self._custom_exes[0]}.")
+            elif not self._custom_exes:
+                self._message("No program was found there. Choose the folder that contains the game.", error=True)
+            else:
+                self._message("Select every program that belongs to this game. You can change this later.")
+
+    def _selected_custom_exes(self) -> list[str]:
+        if not self._alive_widget("custom_exe_list"):
+            return []
+        selection = self.custom_exe_list.curselection()
+        if not selection and len(self._custom_exes) == 1:
+            return list(self._custom_exes)
+        chosen: list[str] = []
+        for index in selection:
+            position = int(index)
+            if 0 <= position < len(self._custom_exes):
+                chosen.append(self._custom_exes[position])
+        return chosen
 
     def _selected_custom_exe(self) -> str:
-        if not self._alive_widget("custom_exe_list"):
-            return ""
-        selection = self.custom_exe_list.curselection()
-        if not selection:
-            return ""
-        index = int(selection[0])
-        if index < 0 or index >= len(self._custom_exes):
-            return ""
-        return self._custom_exes[index]
+        chosen = self._selected_custom_exes()
+        return chosen[0] if chosen else ""
 
-    def remove_selected_rule(self) -> str | None:
-        selection = self.rules_tree.selection()
-        if not selection:
-            return "Select a game first."
-        index = int(selection[0])
-        if index < 0 or index >= len(self.settings.rules):
-            return "Select a game first."
-        exe = self.settings.rules[index].exe
+    def _remove_rule(self, rule: Rule) -> str | None:
         self._pull_settings()
-        for position, rule in enumerate(self.settings.rules):
-            if exe_key(rule.exe) != exe_key(exe):
+        key = self._group_key(rule)
+        removed = False
+        kept: list[Rule] = []
+        for existing in self.settings.rules:
+            if self._group_key(existing) == key:
+                self.settings.dismiss_exe(existing.exe)
+                removed = True
                 continue
-            self.settings.dismiss_exe(rule.exe)
-            del self.settings.rules[position]
-            break
-        else:
-            return "Select a game first."
+            kept.append(existing)
+        if not removed:
+            return "That game is no longer in the list."
+        self.settings.rules = kept
+        if not self._save():
+            return "Could not save mappings."
+        self.reload_rules()
+        return None
+
+    def _on_delete_game(self, rule: Rule) -> None:
+        error = self._remove_rule(rule)
+        if error == "Could not save mappings.":
+            return
+        self._message(error or "Removed.", error=bool(error))
+
+    def _replace_game(self, rule: Rule, exes: list[str], preset: GamePreset, title: str, name: str) -> str | None:
+        self._pull_settings()
+        key = self._group_key(rule)
+        if not any(self._group_key(existing) == key for existing in self.settings.rules):
+            return "That game is no longer in the list."
+        old_exes = [existing.exe for existing in self.settings.rules if self._group_key(existing) == key]
+        new_keys = {exe_key(exe) for exe in exes}
+        for old in old_exes:
+            if exe_key(old) not in new_keys:
+                self.settings.dismiss_exe(old)
+        self.settings.rules = [existing for existing in self.settings.rules if self._group_key(existing) != key]
+        label = name.strip() or Path(exes[0]).stem
+        for exe in exes:
+            self.settings.upsert_rule(
+                Rule(
+                    exe=display_exe(exe),
+                    profile_id=preset.id,
+                    profile_name=preset.name,
+                    title_contains=title.strip(),
+                    name=label,
+                )
+            )
         if not self._save():
             return "Could not save mappings."
         self.reload_rules()
@@ -937,65 +1171,139 @@ class SettingsWindow:
 
         widget.bind("<MouseWheel>", _wheel)
 
+    def _open_edit_game(self, rule: Rule) -> None:
+        if not self._presets:
+            self._message("Sonar presets are still loading. Try again in a moment.", error=True)
+            return
+        dialog = self._dialog("Edit game", 520, 680)
+        frame = ttk.Frame(dialog, padding=16)
+        frame.grid(row=0, column=0, sticky="nsew")
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(7, weight=1)
+        ttk.Label(frame, text="Name", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        name_var = tk.StringVar(value=display_name(rule))
+        ttk.Entry(frame, textvariable=name_var).grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        folder_name = tk.StringVar(value="Current programs")
+        folder_row = ttk.Frame(frame)
+        folder_row.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        folder_row.columnconfigure(0, weight=1)
+        ttk.Label(folder_row, textvariable=folder_name, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        exe_label = ttk.Label(frame, text="Select every program that belongs to this game.", style="Muted.TLabel")
+        exe_label.grid(row=3, column=0, sticky="w", pady=(8, 0))
+        exe_list = self._listbox(frame, height=4, selectmode="multiple")
+        exe_list.grid(row=4, column=0, sticky="ew", pady=(4, 0))
+        self._bind_list_wheel(exe_list)
+        members = [item for item in self.settings.rules if self._group_key(item) == self._group_key(rule)]
+        found: list[str] = [item.exe for item in members] or [rule.exe]
+        for name in found:
+            exe_list.insert(tk.END, name)
+        exe_list.selection_set(0, tk.END)
+        if len(found) == 1:
+            exe_label.grid_remove()
+            exe_list.grid_remove()
+
+        def browse() -> None:
+            grab = self.win.grab_current()
+            if grab is not None:
+                grab.grab_release()
+            try:
+                selected = filedialog.askdirectory(title="Choose the game folder", parent=dialog)
+            finally:
+                if grab is not None and self._widget_ok(grab):
+                    grab.grab_set()
+            if not selected:
+                return
+            found.clear()
+            found.extend(find_game_exes(Path(selected)))
+            folder_name.set(Path(selected).name)
+            exe_list.delete(0, tk.END)
+            for name in found:
+                exe_list.insert(tk.END, name)
+            several = len(found) > 1
+            exe_label.grid() if several else exe_label.grid_remove()
+            exe_list.grid() if several else exe_list.grid_remove()
+            if found:
+                exe_list.selection_set(0, tk.END)
+            if not found:
+                self._message("No program was found there. Choose the folder that contains the game.", error=True)
+
+        ttk.Button(folder_row, text="Change folder", command=browse).grid(row=0, column=1, padx=(8, 0))
+        title_var = tk.StringVar(value=rule.title_contains)
+        ttk.Label(frame, text="Only when the window title contains", style="Muted.TLabel").grid(
+            row=5, column=0, sticky="w", pady=(10, 0)
+        )
+        ttk.Entry(frame, textvariable=title_var).grid(row=6, column=0, sticky="ew", pady=(4, 0))
+        preset_box = ttk.Frame(frame)
+        preset_box.grid(row=7, column=0, sticky="nsew", pady=(12, 0))
+        preset_box.columnconfigure(0, weight=1)
+        preset_box.rowconfigure(2, weight=1)
+        ttk.Label(preset_box, text="Sonar preset", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        query = tk.StringVar()
+        ttk.Entry(preset_box, textvariable=query).grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        preset_list = self._listbox(preset_box, height=8)
+        preset_list.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
+        self._bind_list_wheel(preset_list)
+        shown: list[GamePreset] = []
+
+        def refill(*_args: object) -> None:
+            shown.clear()
+            shown.extend(self._matching_presets(query.get(), favorites_when_empty=False, limit=1000))
+            shown.sort(key=lambda preset: (0 if preset.is_favorite else 1, preset.name.casefold()))
+            preset_list.delete(0, tk.END)
+            current = -1
+            for preset in shown:
+                preset_list.insert(tk.END, self._preset_label(preset))
+                if preset.id == rule.profile_id:
+                    current = preset_list.size() - 1
+            if current >= 0:
+                preset_list.selection_set(current)
+                preset_list.see(current)
+
+        def chosen_exes() -> list[str]:
+            selection = exe_list.curselection()
+            if not selection and len(found) == 1:
+                return list(found)
+            return [found[int(index)] for index in selection if 0 <= int(index) < len(found)]
+
+        def save() -> None:
+            exes = chosen_exes()
+            if not exes:
+                self._message("Choose at least one program.", error=True)
+                return
+            selection = preset_list.curselection()
+            if not selection:
+                self._message("Choose a Sonar preset from the list.", error=True)
+                return
+            preset = shown[int(selection[0])]
+            error = self._replace_game(rule, exes, preset, title_var.get(), name_var.get())
+            if error:
+                if error != "Could not save mappings.":
+                    self._message(error, error=True)
+                return
+            self._message(f"{name_var.get().strip() or display_name(rule)} now uses {preset.name}.")
+            dialog.destroy()
+
+        query.trace_add("write", refill)
+        refill()
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=8, column=0, sticky="w", pady=(12, 0))
+        ttk.Button(buttons, text="Save", style="Accent.TButton", command=save).pack(side="left")
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="left", padx=(8, 0))
+
     def _open_add_game(self) -> None:
-        dialog = self._dialog("Add a game", 520, 580)
+        dialog = self._dialog("Add a game", 640, 720)
         self._add_dialog = dialog
         frame = ttk.Frame(dialog, padding=16)
         frame.grid(row=0, column=0, sticky="nsew")
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(6, weight=1)
+        frame.rowconfigure(2, weight=1)
+        frame.rowconfigure(8, weight=1)
         ttk.Label(
             frame,
-            text="Browse to the game folder, then choose the Sonar preset.",
+            text="Pick an installed game, or browse to a folder if it is not listed.",
             style="Muted.TLabel",
-            wraplength=460,
+            wraplength=580,
         ).grid(row=0, column=0, sticky="ew")
-        folder = ttk.Frame(frame)
-        folder.grid(row=1, column=0, sticky="ew", pady=(12, 0))
-        folder.columnconfigure(0, weight=1)
-        ttk.Label(folder, textvariable=self.custom_folder, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Button(folder, text="Browse folder", command=lambda: self._browse_game_folder(dialog)).grid(
-            row=0, column=1, padx=(8, 0)
-        )
-        self._exe_label = ttk.Label(frame, text="Choose the program", style="Muted.TLabel")
-        self._exe_label.grid(row=2, column=0, sticky="w", pady=(10, 0))
-        self._exe_label.grid_remove()
-        self.custom_exe_list = self._listbox(frame, height=4)
-        self.custom_exe_list.grid(row=3, column=0, sticky="ew", pady=(4, 0))
-        self.custom_exe_list.grid_remove()
-        self._bind_list_wheel(self.custom_exe_list)
-        ttk.Label(frame, text="Only when the window title contains", style="Muted.TLabel").grid(
-            row=4, column=0, sticky="w", pady=(12, 0)
-        )
-        ttk.Entry(frame, textvariable=self.custom_title).grid(row=5, column=0, sticky="ew", pady=(4, 0))
-        preset_box = ttk.Frame(frame)
-        preset_box.grid(row=6, column=0, sticky="nsew", pady=(12, 0))
-        preset_box.columnconfigure(0, weight=1)
-        preset_box.rowconfigure(2, weight=1)
-        ttk.Label(preset_box, text="Sonar preset", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Entry(preset_box, textvariable=self.custom_preset_query).grid(row=1, column=0, sticky="ew", pady=(4, 0))
-        self.custom_preset_list = self._listbox(preset_box, height=8)
-        self.custom_preset_list.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
-        self._bind_list_wheel(self.custom_preset_list)
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=7, column=0, sticky="w", pady=(12, 0))
-        ttk.Button(buttons, text="Add", style="Accent.TButton", command=self._on_add_custom).pack(side="left")
-        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="left", padx=(8, 0))
-        self.custom_folder.set("No folder selected")
-        self.custom_title.set("")
-        self.custom_preset_query.set("")
-        self._custom_exes = []
-        self._fill_custom_presets()
-
-    def _open_installed_game(self) -> None:
-        dialog = self._dialog("Add an installed game", 640, 520)
-        frame = ttk.Frame(dialog, padding=16)
-        frame.grid(row=0, column=0, sticky="nsew")
-        frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(2, weight=1)
-        caption = ttk.Label(frame, textvariable=self.suggest_caption, style="Muted.TLabel", justify="left")
-        caption.grid(row=0, column=0, sticky="ew")
-        dialog.bind("<Configure>", lambda event: caption.configure(wraplength=max(200, event.width - 40)))
         search = ttk.Frame(frame)
         search.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         search.columnconfigure(0, weight=1)
@@ -1015,7 +1323,7 @@ class SettingsWindow:
             tree_frame,
             columns=("game", "preset", "status"),
             show="headings",
-            height=10,
+            height=6,
             selectmode="browse",
         )
         for key, title, width in (("game", "Game", 180), ("preset", "Preset", 180), ("status", "Status", 120)):
@@ -1023,22 +1331,69 @@ class SettingsWindow:
             self.suggestion_tree.column(key, width=width, anchor="w", stretch=key != "status")
         self.suggestion_tree.tag_configure("running", foreground=_ACCENT)
         self.suggestion_tree.tag_configure("added", foreground=_MUTED)
-        scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.suggestion_tree.yview)
-        self.suggestion_tree.configure(yscrollcommand=scroll.set)
+        tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.suggestion_tree.yview)
+        self.suggestion_tree.configure(yscrollcommand=tree_scroll.set)
         self.suggestion_tree.grid(row=0, column=0, sticky="nsew")
-        scroll.grid(row=0, column=1, sticky="ns")
+        tree_scroll.grid(row=0, column=1, sticky="ns")
         self.suggestion_tree.bind("<Double-1>", self._on_suggestion_activate)
         self.suggestion_tree.bind("<Return>", self._on_suggestion_activate)
         self._bind_list_wheel(self.suggestion_tree)
+        folder = ttk.Frame(frame)
+        folder.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        folder.columnconfigure(0, weight=1)
+        ttk.Label(folder, textvariable=self.custom_folder, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Button(folder, text="Browse folder", command=lambda: self._browse_game_folder(dialog)).grid(
+            row=0, column=1, padx=(8, 0)
+        )
+        ttk.Label(folder, text="Name", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(folder, textvariable=self.custom_name).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self._exe_label = ttk.Label(frame, text="Choose the program", style="Muted.TLabel")
+        self._exe_label.grid(row=4, column=0, sticky="w", pady=(8, 0))
+        self._exe_label.grid_remove()
+        self.custom_exe_list = self._listbox(frame, height=3, selectmode="multiple")
+        self.custom_exe_list.grid(row=5, column=0, sticky="ew", pady=(4, 0))
+        self.custom_exe_list.grid_remove()
+        self._bind_list_wheel(self.custom_exe_list)
+        ttk.Label(frame, text="Only when the window title contains", style="Muted.TLabel").grid(
+            row=6, column=0, sticky="w", pady=(10, 0)
+        )
+        ttk.Entry(frame, textvariable=self.custom_title).grid(row=7, column=0, sticky="ew", pady=(4, 0))
+        preset_box = ttk.Frame(frame)
+        preset_box.grid(row=8, column=0, sticky="nsew", pady=(12, 0))
+        preset_box.columnconfigure(0, weight=1)
+        preset_box.rowconfigure(2, weight=1)
+        ttk.Label(preset_box, text="Sonar preset", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Entry(preset_box, textvariable=self.custom_preset_query).grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.custom_preset_list = self._listbox(preset_box, height=5)
+        self.custom_preset_list.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
+        self._bind_list_wheel(self.custom_preset_list)
         buttons = ttk.Frame(frame)
-        buttons.grid(row=3, column=0, sticky="ew", pady=(12, 0))
-        ttk.Button(buttons, text="Add", style="Accent.TButton", command=self._on_add_selected).pack(side="left")
-        ttk.Button(buttons, text="Refresh", command=self.refresh).pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side="right")
+        buttons.grid(row=9, column=0, sticky="w", pady=(12, 0))
+        ttk.Button(buttons, text="Add", style="Accent.TButton", command=self._on_add_game).pack(side="left")
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="left", padx=(8, 0))
+        self.custom_folder.set("No folder selected")
+        self.custom_title.set("")
+        self.custom_name.set("")
+        self.custom_preset_query.set("")
+        self._custom_exes = []
         self.search_var.set("")
         self.show_all_var.set(False)
+        self._fill_custom_presets()
         self._fill_suggestions()
         entry.focus_set()
+
+    def _on_add_game(self) -> None:
+        if self._custom_exes:
+            self._on_add_custom()
+            return
+        item = self._selected_suggestion()
+        if item is not None:
+            error = self.add_suggestion(item)
+            self._message(error or f"Added {item.name}.", error=bool(error))
+            if not error and self._alive_widget("_add_dialog"):
+                self._add_dialog.destroy()
+            return
+        self._message("Choose an installed game, or browse to its folder.", error=True)
 
     def _on_add_selected(self) -> None:
         item = self._selected_suggestion()
@@ -1055,15 +1410,9 @@ class SettingsWindow:
             if error != "Could not save mappings.":
                 self._message(error, error=True)
             return
-        self._message(f"Added {exe}.")
+        self._message(f"Added {self.custom_name.get().strip() or exe}.")
         if self._alive_widget("_add_dialog"):
             self._add_dialog.destroy()
-
-    def _on_remove(self) -> None:
-        error = self.remove_selected_rule()
-        if error == "Could not save mappings.":
-            return
-        self._message(error or "Removed.", error=bool(error))
 
     def _on_choose_default(self, _event: object = None) -> None:
         selection = self.default_list.curselection()
@@ -1236,13 +1585,7 @@ class SettingsWindow:
         return {exe_key(rule.exe) for rule in self.settings.rules}
 
     def _game_label(self, rule: Rule) -> str:
-        if rule.title_contains:
-            return f"{Path(rule.exe).stem}  ·  {rule.title_contains}"
-        key = exe_key(rule.exe)
-        for item in self._suggestions:
-            if exe_key(item.exe) == key:
-                return item.name
-        return Path(rule.exe).stem
+        return display_name(rule)
 
     def _default_caption(self) -> str:
         if self.settings.default_profile_name:
@@ -1273,7 +1616,7 @@ class SettingsWindow:
         if mtime == self._mappings_mtime:
             return
         self._pull_settings()
-        if hasattr(self, "rules_tree"):
+        if hasattr(self, "_games_inner"):
             self.startup_var.set(self.settings.start_with_windows)
             self.reload_rules()
 

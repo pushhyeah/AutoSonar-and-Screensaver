@@ -26,6 +26,10 @@ _HOLD_SECONDS = 5.0
 _MEDIA_GRACE = 5.0
 _FONT = Path(r"C:\Windows\Fonts\segoeuib.ttf")
 _INFO_USAGE_PAGE = 0xFF00
+_BUTTON_INTERFACE = 3
+_BUTTON_USAGE_PAGE = 0x0C
+_STATUS_OPCODES = {0xB0, 0xB5, 0xB7}
+_REPEAT_GAP = 0.35
 
 
 class NovaDisplay:
@@ -70,9 +74,9 @@ class NovaDisplay:
             log.debug("Nova Pro OLED was already closed", exc_info=True)
 
 
-def show_preset(name: str) -> None:
-    """Show the preset name for a few seconds, then hand the screen back to GG."""
-    screen.show_preset(name)
+def show_preset(name: str, subtitle: str = "") -> None:
+    """Show the game name and preset, then hand the screen back to GG."""
+    screen.show_preset(name, subtitle)
 
 
 def start_screen() -> None:
@@ -95,6 +99,7 @@ class DockScreen:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._toast_text = ""
+        self._toast_sub = ""
         self._toast_until = 0.0
         self._last_activity = time.monotonic()
         self._wake = False
@@ -104,7 +109,11 @@ class DockScreen:
         self._effect = None
         self._clip = None
         self._info = None
+        self._button = None
         self._last_report = b""
+        self._last_report_at = 0.0
+        self._last_button = b""
+        self._last_button_at = 0.0
         self._media_playing = False
         self._media_until = 0.0
         self._media_checked = 0.0
@@ -128,9 +137,12 @@ class DockScreen:
             self._clip = None
             self._effect_name = ""
 
-    def show_preset(self, name: str) -> None:
+    def show_preset(self, name: str, subtitle: str = "") -> None:
         with self._lock:
             self._toast_text = name.strip() or "Preset"
+            self._toast_sub = subtitle.strip()
+            if self._toast_sub.casefold() == self._toast_text.casefold():
+                self._toast_sub = ""
             self._toast_until = time.monotonic() + _HOLD_SECONDS
             self._last_activity = time.monotonic()
             self._wake = True
@@ -194,6 +206,7 @@ class DockScreen:
         with self._lock:
             toast = now < self._toast_until
             text = self._toast_text
+            subtitle = self._toast_sub
             idle_minutes = 5 if self._settings is None else self._settings.idle_minutes
             idle_for = now - self._last_activity
             playing = self._media_playing
@@ -202,7 +215,7 @@ class DockScreen:
         if preview:
             return self._saver_frame(), False
         if toast and text:
-            return _render(text), False
+            return _render(text, subtitle), False
         if idle_minutes > 0 and not playing and idle_for >= idle_minutes * 60:
             return self._saver_frame(), False
         return None, holding
@@ -223,13 +236,16 @@ class DockScreen:
             name = choice
             if choice == "shuffle":
                 if self._effect is None:
-                    name = random.choice([item for item in saver.BUILTINS if item != "shuffle"])
+                    name = random.choice(
+                        [item for item in saver.BUILTINS if item not in {"shuffle", "bouncing-text"}]
+                    )
                     self._effect = saver.make_effect(name)
                     self._effect_name = name
                 return self._effect.frame()
-            if self._effect is None or self._effect_name != name:
-                self._effect = saver.make_effect(name)
-                self._effect_name = name
+            key = f"{name}:{settings.bounce_text}" if name == "bouncing-text" else name
+            if self._effect is None or self._effect_name != key:
+                self._effect = saver.make_effect(name, settings.bounce_text)
+                self._effect_name = key
                 self._clip = None
             return self._effect.frame()
         except Exception:
@@ -239,51 +255,108 @@ class DockScreen:
             return self._effect.frame()
 
     def _poll_dock(self) -> None:
-        device = self._ensure_info()
+        if self._drain(self._ensure_info(), buttons=False) or self._drain(self._ensure_button(), buttons=True):
+            if self._holding:
+                log.info("Dock button stopped the screensaver")
+            self.note_activity()
+
+    def _drain(self, device, *, buttons: bool) -> bool:
         if device is None:
-            return
+            return False
+        woke = False
         try:
             device.set_nonblocking(True)
-            report = bytes(device.read(64) or b"")
+            while True:
+                report = bytes(device.read(64) or b"")
+                if not report:
+                    break
+                if buttons:
+                    woke = self._button_pressed(report) or woke
+                else:
+                    woke = self._control_changed(report) or woke
         except Exception:
             log.debug("Dock control read failed", exc_info=True)
-            self._close_info()
-            return
-        if not report or len(report) < 2 or report[1] == 0xB7 or report == self._last_report:
-            return
+            if buttons:
+                self._close_button()
+            else:
+                self._close_info()
+        return woke
+
+    def _control_changed(self, report: bytes) -> bool:
+        if len(report) < 2 or self._opcode(report) in _STATUS_OPCODES:
+            return False
+        now = time.monotonic()
+        if report == self._last_report and now - self._last_report_at < _REPEAT_GAP:
+            return False
         self._last_report = report
-        self.note_activity()
+        self._last_report_at = now
+        return True
+
+    def _button_pressed(self, report: bytes) -> bool:
+        if not any(report):
+            self._last_button = b""
+            return False
+        now = time.monotonic()
+        if report == self._last_button and now - self._last_button_at < _REPEAT_GAP:
+            return False
+        self._last_button = report
+        self._last_button_at = now
+        return True
+
+    @staticmethod
+    def _opcode(report: bytes) -> int:
+        if report[0] in (0x06, 0x07) and len(report) > 1:
+            return report[1]
+        return report[0]
+
+    def _ensure_button(self):
+        if self._button is not None:
+            return self._button
+        device = self._open_control(_BUTTON_INTERFACE, _BUTTON_USAGE_PAGE)
+        self._button = device
+        return device
 
     def _ensure_info(self):
         if self._info is not None:
             return self._info
+        device = self._open_control(_INTERFACE, _INFO_USAGE_PAGE)
+        self._info = device
+        return device
+
+    def _open_control(self, interface: int, usage_page: int):
         try:
             import hid
 
             matches = [
                 info
                 for info in hid.enumerate(_VENDOR_ID, _PRODUCT_ID)
-                if info.get("interface_number") == _INTERFACE and info.get("usage_page") == _INFO_USAGE_PAGE
+                if info.get("interface_number") == interface and info.get("usage_page") == usage_page
             ]
             if not matches:
                 return None
             device = hid.device()
             device.open_path(matches[0]["path"])
             device.set_nonblocking(True)
-            self._info = device
             return device
         except Exception:
-            log.debug("Could not open the Nova Pro controls", exc_info=True)
+            log.debug("Could not open Nova Pro controls on interface %s", interface, exc_info=True)
             return None
 
+    def _close_button(self) -> None:
+        self._button = self._close_device(self._button)
+
     def _close_info(self) -> None:
-        if self._info is None:
-            return
+        self._info = self._close_device(self._info)
+
+    @staticmethod
+    def _close_device(device):
+        if device is None:
+            return None
         try:
-            self._info.close()
+            device.close()
         except Exception:
             pass
-        self._info = None
+        return None
 
     def _poll_media(self) -> None:
         now = time.monotonic()
@@ -311,20 +384,24 @@ class DockScreen:
 screen = DockScreen()
 
 
-def _render(text: str) -> Image.Image:
+def _render(text: str, subtitle: str = "") -> Image.Image:
     image = Image.new("1", (_WIDTH, _HEIGHT), 0)
     draw = ImageDraw.Draw(image)
-    size = 18 if len(text) <= 16 else 14 if len(text) <= 28 else 11
-    font = ImageFont.truetype(str(_FONT), size) if _FONT.is_file() else ImageFont.load_default()
-    lines = _wrap(text, font, _WIDTH - 8)
-    heights = [draw.textbbox((0, 0), line, font=font)[3] for line in lines]
-    total = sum(heights) + max(0, len(lines) - 1) * 2
+    title_size = 16 if len(text) <= 16 else 13 if len(text) <= 24 else 11
+    title_font = ImageFont.truetype(str(_FONT), title_size) if _FONT.is_file() else ImageFont.load_default()
+    title_lines = _wrap(text, title_font, _WIDTH - 8)[:2]
+    blocks: list[tuple[str, ImageFont.ImageFont]] = [(line, title_font) for line in title_lines]
+    if subtitle:
+        sub_font = ImageFont.truetype(str(_FONT), 11) if _FONT.is_file() else title_font
+        blocks.append((_wrap(subtitle, sub_font, _WIDTH - 8)[0], sub_font))
+    heights = [draw.textbbox((0, 0), line, font=font)[3] for line, font in blocks]
+    total = sum(heights) + max(0, len(blocks) - 1) * 3
     y = max(0, (_HEIGHT - total) // 2)
-    for line, height in zip(lines, heights):
+    for (line, font), height in zip(blocks, heights):
         box = draw.textbbox((0, 0), line, font=font)
         x = max(0, (_WIDTH - (box[2] - box[0])) // 2)
         draw.text((x, y), line, fill=1, font=font)
-        y += height + 2
+        y += height + 3
     return image
 
 

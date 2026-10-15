@@ -89,6 +89,7 @@ class Rule:
     profile_id: str
     profile_name: str
     title_contains: str = ""
+    name: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -96,6 +97,7 @@ class Rule:
             "profile_id": self.profile_id,
             "profile_name": self.profile_name,
             "title_contains": self.title_contains,
+            "name": self.name,
         }
 
     @classmethod
@@ -111,7 +113,14 @@ class Rule:
             profile_id=profile_id,
             profile_name=str(data.get("profile_name") or "").strip(),
             title_contains=str(data.get("title_contains") or "").strip(),
+            name=str(data.get("name") or "").strip(),
         )
+
+
+def display_name(rule: Rule) -> str:
+    if rule.name.strip():
+        return rule.name.strip()
+    return Path(rule.exe).stem
 
 
 @dataclass

@@ -220,27 +220,50 @@ _SKIP_EXE_MARKERS = (
 )
 
 
+_SKIP_DIR_NAMES = {
+    ".git",
+    "__pycache__",
+    "crashreport",
+    "crashhandler",
+    "dotnet",
+    "easyanticheat",
+    "easyanticheat_eos",
+    "installer",
+    "installers",
+    "node_modules",
+    "redist",
+    "redistributables",
+    "_redist",
+}
+_MAX_EXE_DEPTH = 6
+_MAX_EXE_RESULTS = 40
+
+
 def find_game_exes(folder: Path) -> list[str]:
-    """Return game executable names in a folder and its immediate subfolders."""
+    """Return game executable names in a folder and its subfolders."""
     if not folder.is_dir():
         return []
-    roots = [folder]
-    try:
-        roots.extend(child for child in folder.iterdir() if child.is_dir())
-    except OSError:
-        return []
     found: list[Path] = []
-    for root in roots:
+
+    def walk(path: Path, depth: int) -> None:
+        if depth > _MAX_EXE_DEPTH:
+            return
         try:
-            children = list(root.iterdir())
+            children = list(path.iterdir())
         except OSError:
-            continue
-        found.extend(path for path in children if path.is_file() and path.suffix.casefold() == ".exe")
+            return
+        for child in children:
+            if child.is_file() and child.suffix.casefold() == ".exe":
+                found.append(child)
+            elif child.is_dir() and child.name.casefold() not in _SKIP_DIR_NAMES:
+                walk(child, depth + 1)
+
+    walk(folder, 0)
     usable = [path for path in found if not any(marker in path.stem.casefold() for marker in _SKIP_EXE_MARKERS)]
     if not usable:
         usable = found
     folder_name = normalize_name(folder.name)
-    ranked: list[tuple[int, str, str]] = []
+    ranked: list[tuple[int, int, str, str]] = []
     seen: set[str] = set()
     for path in usable:
         key = exe_key(path.name)
@@ -248,14 +271,14 @@ def find_game_exes(folder: Path) -> list[str]:
             continue
         seen.add(key)
         stem = normalize_name(path.stem)
-        rank = 0
+        rank = len(path.relative_to(folder).parts)
         if "launcher" in path.stem.casefold() and len(usable) > 1:
-            rank += 10
+            rank += 20
         if stem == folder_name or (folder_name and folder_name in stem):
-            rank -= 5
-        ranked.append((rank, path.name.casefold(), display_exe(path.name)))
+            rank -= 10
+        ranked.append((rank, len(ranked), path.name.casefold(), display_exe(path.name)))
     ranked.sort()
-    return [name for _rank, _sort_name, name in ranked]
+    return [name for _rank, _order, _sort_name, name in ranked[:_MAX_EXE_RESULTS]]
 
 
 def adopt_detected(settings: Settings, suggestions: list[GameSuggestion]) -> list[str]:
@@ -278,6 +301,7 @@ def adopt_detected(settings: Settings, suggestions: list[GameSuggestion]) -> lis
                 profile_id=item.preset_id,
                 profile_name=item.preset_name,
                 title_contains=item.title_contains,
+                name=item.name,
             )
         )
         existing.add(key)

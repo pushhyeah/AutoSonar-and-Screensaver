@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import psutil
 
-from autosonar.config import ConfigStore, Rule, Settings, exe_key
+from autosonar.config import ConfigStore, Rule, Settings, display_name, exe_key
 from autosonar.sonar import SonarClient, SonarError
 
 log = logging.getLogger(__name__)
@@ -24,12 +24,23 @@ class WatcherSnapshot:
     state: str
     preset_name: str
     detail: str
+    game_name: str = ""
 
     @property
     def circle_text(self) -> str:
+        if self.state == "game" and self.game_name:
+            return self.game_name
         if self.state == "needs_setup" or not self.preset_name:
             return "No preset"
         return self.preset_name
+
+    @property
+    def circle_sub(self) -> str:
+        if self.state == "game" and self.game_name:
+            return self.preset_name
+        if self.preset_name and self.state in {"looking", "paused"}:
+            return "Active preset"
+        return ""
 
     @property
     def sentence(self) -> str:
@@ -172,6 +183,7 @@ class ProcessWatcher:
         self._state = threading.RLock()
         self._paused = False
         self._profile_name = ""
+        self._game_name = ""
         self._detail = ""
         self._error = ""
         self._on_change = None
@@ -240,13 +252,14 @@ class ProcessWatcher:
         titles = titles_by_pid() if needs_titles else {}
         target = active_target(settings, processes, titles)
         if target is None:
-            self._set_state(profile_name="", detail="", error="")
+            self._dock_game = ""
+            self._set_state(detail="", error="", game_name="")
             return
-        target_id, target_name, reason = target
+        target_id, target_name, reason, game_name = target
         showing_game = reason != "default"
         if showing_game and self._dock_game != reason:
             self._dock_game = reason
-            self._show_on_dock(target_name)
+            self._show_on_dock(game_name or target_name, target_name)
         elif not showing_game:
             self._dock_game = ""
 
@@ -262,13 +275,13 @@ class ProcessWatcher:
 
         if changed:
             log.info("Switched game preset to %s (%s)", target_name, reason)
-        self._set_state(profile_name=target_name, detail=reason, error="")
+        self._set_state(profile_name=target_name, detail=reason, error="", game_name=game_name)
 
-    def _show_on_dock(self, preset_name: str) -> None:
+    def _show_on_dock(self, game_name: str, preset_name: str) -> None:
         try:
             from autosonar.oled import show_preset
 
-            show_preset(preset_name)
+            show_preset(game_name, preset_name)
         except Exception:
             log.exception("Could not show the preset on the Nova Pro dock")
 
@@ -317,10 +330,13 @@ class ProcessWatcher:
         profile_name: str | None = None,
         detail: str | None = None,
         error: str | None = None,
+        game_name: str | None = None,
     ) -> None:
         with self._state:
             if profile_name is not None:
                 self._profile_name = profile_name
+            if game_name is not None:
+                self._game_name = game_name
             if detail is not None:
                 self._detail = detail
             if error is not None and error != self._error:
@@ -346,7 +362,7 @@ class ProcessWatcher:
         elif snap.state == "needs_setup":
             base = "No default preset"
         elif snap.state == "game":
-            base = f"{snap.preset_name} ({snap.detail})" if snap.detail else snap.preset_name
+            base = snap.game_name or snap.preset_name
         elif snap.state == "looking":
             base = snap.preset_name or "Looking for a game"
         elif snap.state == "error":
@@ -357,14 +373,14 @@ class ProcessWatcher:
 
     def _snapshot_unlocked(self) -> WatcherSnapshot:
         if self._paused:
-            return WatcherSnapshot("paused", self._profile_name, "")
+            return WatcherSnapshot("paused", self._profile_name, "", self._game_name)
         if self._error:
-            return WatcherSnapshot("error", self._profile_name, self._error)
+            return WatcherSnapshot("error", self._profile_name, self._error, self._game_name)
         if not self._profile_name:
             return WatcherSnapshot("needs_setup", "", "")
         if self._detail and self._detail != "default":
-            return WatcherSnapshot("game", self._profile_name, self._detail)
-        return WatcherSnapshot("looking", self._profile_name, "")
+            return WatcherSnapshot("game", self._profile_name, self._detail, self._game_name)
+        return WatcherSnapshot("looking", self._profile_name, "", self._game_name)
 
 
 def active_target(settings: Settings, processes: list[ObservedProcess], titles: dict[int, list[str]]) -> tuple[str, str, str] | None:
@@ -374,7 +390,7 @@ def active_target(settings: Settings, processes: list[ObservedProcess], titles: 
         reason = match.exe
         if match.title_contains.strip():
             reason = f"{match.exe} / {match.title_contains.strip()}"
-        return match.profile_id, match.profile_name or match.exe, reason
+        return match.profile_id, match.profile_name or match.exe, reason, display_name(match)
     if settings.default_profile_id:
-        return settings.default_profile_id, settings.default_profile_name or "Default", "default"
+        return settings.default_profile_id, settings.default_profile_name or "Default", "default", ""
     return None

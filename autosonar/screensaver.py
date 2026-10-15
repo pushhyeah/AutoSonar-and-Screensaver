@@ -18,7 +18,8 @@ log = logging.getLogger(__name__)
 
 WIDTH = 128
 HEIGHT = 64
-BUILTINS = ("starfield", "matrix", "bounce", "clock", "plasma", "shuffle")
+BUILTINS = ("starfield", "matrix", "bounce", "bouncing-text", "clock", "plasma", "shuffle")
+BOUNCE_TEXT_LIMIT = 12
 VIDEO_SUFFIXES = {".mp4", ".webm", ".mov", ".mkv", ".avi"}
 MEDIA_SUFFIXES = {".gif", *VIDEO_SUFFIXES}
 _FONT = Path(r"C:\Windows\Fonts\segoeui.ttf")
@@ -28,9 +29,14 @@ _FONT = Path(r"C:\Windows\Fonts\segoeui.ttf")
 class ScreenSettings:
     idle_minutes: int = 5
     choice: str = "starfield"
+    bounce_text: str = "Hi"
 
     def to_dict(self) -> dict[str, object]:
-        return {"idle_minutes": self.idle_minutes, "choice": self.choice}
+        return {
+            "idle_minutes": self.idle_minutes,
+            "choice": self.choice,
+            "bounce_text": self.bounce_text,
+        }
 
 
 def settings_path() -> Path:
@@ -56,7 +62,11 @@ def load_settings() -> ScreenSettings:
     if not isinstance(minutes, int):
         minutes = 5
     choice = str(data.get("choice") or "starfield")
-    return ScreenSettings(idle_minutes=max(0, min(180, minutes)), choice=choice)
+    return ScreenSettings(
+        idle_minutes=max(0, min(180, minutes)),
+        choice=choice,
+        bounce_text=clean_bounce_text(str(data.get("bounce_text") or "Hi")),
+    )
 
 
 def save_settings(settings: ScreenSettings) -> None:
@@ -208,6 +218,11 @@ class MatrixRain(Effect):
         return image
 
 
+def clean_bounce_text(value: str) -> str:
+    cleaned = " ".join(value.replace("\n", " ").split())
+    return cleaned[:BOUNCE_TEXT_LIMIT] or "Hi"
+
+
 class Bounce(Effect):
     def __init__(self) -> None:
         self._x = 20.0
@@ -227,6 +242,46 @@ class Bounce(Effect):
             self._dy *= -1
         draw.ellipse((self._x - radius, self._y - radius, self._x + radius, self._y + radius), fill=1)
         return image
+
+
+class BounceText(Effect):
+    def __init__(self, text: str) -> None:
+        self._text = clean_bounce_text(text)
+        probe = ImageDraw.Draw(blank())
+        self._font = _fit_bounce_font(probe, self._text)
+        box = probe.textbbox((0, 0), self._text, font=self._font)
+        self._origin = (box[0], box[1])
+        self._width = max(1, box[2] - box[0])
+        self._height = max(1, box[3] - box[1])
+        self._x = 1.0
+        self._y = 1.0
+        self._dx = 2.0
+        self._dy = 1.2
+
+    def frame(self) -> Image.Image:
+        image = blank()
+        draw = ImageDraw.Draw(image)
+        self._x += self._dx
+        self._y += self._dy
+        max_x = max(0, WIDTH - self._width)
+        max_y = max(0, HEIGHT - self._height)
+        if self._x <= 0 or self._x >= max_x:
+            self._dx *= -1
+            self._x = min(max(self._x, 0), max_x)
+        if self._y <= 0 or self._y >= max_y:
+            self._dy *= -1
+            self._y = min(max(self._y, 0), max_y)
+        draw.text((self._x - self._origin[0], self._y - self._origin[1]), self._text, fill=1, font=self._font)
+        return image
+
+
+def _fit_bounce_font(draw: ImageDraw.ImageDraw, text: str) -> ImageFont.ImageFont:
+    for size in (22, 18, 16, 14, 12):
+        font = ImageFont.truetype(str(_FONT), size) if _FONT.is_file() else ImageFont.load_default()
+        box = draw.textbbox((0, 0), text, font=font)
+        if box[2] - box[0] <= WIDTH - 20 and box[3] - box[1] <= HEIGHT - 12:
+            return font
+    return ImageFont.truetype(str(_FONT), 12) if _FONT.is_file() else ImageFont.load_default()
 
 
 class Clock(Effect):
@@ -266,11 +321,13 @@ class Plasma(Effect):
         return image
 
 
-def make_effect(name: str) -> Effect:
+def make_effect(name: str, text: str = "") -> Effect:
     if name == "matrix":
         return MatrixRain()
     if name == "bounce":
         return Bounce()
+    if name == "bouncing-text":
+        return BounceText(text)
     if name == "clock":
         return Clock()
     if name == "plasma":
